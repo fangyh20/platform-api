@@ -176,14 +176,12 @@ func main() {
 	// SSE route for build progress
 	api.HandleFunc("/versions/{versionId}/progress", appHandler.SSEHandler).Methods("GET", "OPTIONS")
 
-	// Serve static files from frontend build
-	frontendPath := "../frontend/dist"
-	r.PathPrefix("/assets/").Handler(http.StripPrefix("/assets/", http.FileServer(http.Dir(frontendPath+"/assets"))))
-
-	// Serve index.html for all other routes (SPA fallback)
-	r.PathPrefix("/").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, frontendPath+"/index.html")
-	})
+	// Root route - API info
+	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"name":"RapidBuild Platform API","version":"1.0.0","docs":"https://github.com/fangyh20/platform-api"}`)
+	}).Methods("GET")
 
 	// Create server
 	srv := &http.Server{
