@@ -260,8 +260,13 @@ func (s *VersionService) PromoteVersion(ctx context.Context, versionID string) e
 		}
 	}
 
-	// Call Vercel API to promote deployment
-	err = s.VercelService.PromoteDeployment(*app.VercelProjectID, *version.VercelDeployID)
+	// Verify production URL exists
+	if app.ProductionURL == nil || *app.ProductionURL == "" {
+		return fmt.Errorf("app has no production URL configured")
+	}
+
+	// Call Vercel API to update the production domain to point to this deployment
+	err = s.VercelService.PromoteDeployment(*app.VercelProjectID, *version.VercelDeployID, *app.ProductionURL)
 	if err != nil {
 		return fmt.Errorf("failed to promote deployment on Vercel: %w", err)
 	}

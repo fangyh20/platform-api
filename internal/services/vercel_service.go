@@ -146,13 +146,25 @@ func (s *VercelService) AddDomainToProject(projectID, domainName string) error {
 	return fmt.Errorf("failed to add domain to project (status %d): %s", resp.StatusCode, string(body))
 }
 
-// PromoteDeployment promotes a deployment to production
-// Uses Vercel API v10: POST /v10/projects/{projectId}/promote/{deploymentId}
-// This points all production domains for the project to the given deployment
-func (s *VercelService) PromoteDeployment(projectID, deploymentID string) error {
-	url := fmt.Sprintf("https://api.vercel.com/v10/projects/%s/promote/%s", projectID, deploymentID)
+// PromoteDeployment promotes a deployment to production by updating the project's production domain
+// Uses Vercel API v9: PATCH /v9/projects/{projectId}/domains/{domain}
+// This assigns the production domain to the specific deployment
+func (s *VercelService) PromoteDeployment(projectID, deploymentID, productionDomain string) error {
+	// Update the production domain to point to this deployment
+	url := fmt.Sprintf("https://api.vercel.com/v9/projects/%s/domains/%s", projectID, productionDomain)
 
-	req, err := http.NewRequest("POST", url, nil)
+	reqBody := map[string]interface{}{
+		"gitBranch": nil,
+		"redirect":  nil,
+		"target":    deploymentID,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest("PATCH", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return err
 	}
@@ -166,26 +178,15 @@ func (s *VercelService) PromoteDeployment(projectID, deploymentID string) error 
 	}
 	defer resp.Body.Close()
 
-	// Accept 201, 202 as success
-	// Also accept 409 if the deployment is already in production (not an error)
-	if resp.StatusCode != 201 && resp.StatusCode != 202 && resp.StatusCode != 409 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("vercel promotion failed (status %d): %s", resp.StatusCode, string(body))
+	body, _ := io.ReadAll(resp.Body)
+
+	// Accept 200 as success
+	if resp.StatusCode == 200 {
+		return nil
 	}
 
-	// If 409, check if it's "already production" which is success
-	if resp.StatusCode == 409 {
-		body, _ := io.ReadAll(resp.Body)
-		bodyStr := string(body)
-		if strings.Contains(bodyStr, "already the current production deployment") {
-			// This is fine - deployment is already promoted
-			return nil
-		}
-		// Other 409 errors should still be returned as errors
-		return fmt.Errorf("vercel promotion conflict (status 409): %s", bodyStr)
-	}
-
-	return nil
+	// Other errors
+	return fmt.Errorf("vercel domain update failed (status %d): %s", resp.StatusCode, string(body))
 }
 
 // GetDeploymentIDByURL fetches deployment details by URL and returns the deployment ID
