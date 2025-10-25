@@ -103,15 +103,29 @@ func (b *Builder) BuildApp(ctx context.Context, versionID, appID, requirements s
 
 	// Download previous version from S3 if exists, otherwise use starter code
 	b.sendProgress(versionID, "building", "Setting up workspace...")
-	if err := b.setupWorkspace(ctx, workspaceDir, appID); err != nil {
+	isFirstVersion, err := b.setupWorkspace(ctx, workspaceDir, appID)
+	if err != nil {
 		return b.handleError(ctx, versionID, "Failed to setup workspace", err)
 	}
 
-	// Link Vercel project before Claude runs
-	b.sendProgress(versionID, "building", "Linking Vercel project...")
-	vercelProjectID, err := b.linkVercel(ctx, workspaceDir, versionID)
-	if err != nil {
-		return b.handleError(ctx, versionID, "Failed to link Vercel project", err)
+	// Handle Vercel project linking
+	var vercelProjectID string
+	if isFirstVersion {
+		// First version - always need to link Vercel project
+		b.sendProgress(versionID, "building", "Linking Vercel project...")
+		vercelProjectID, err = b.linkVercel(ctx, workspaceDir, versionID)
+		if err != nil {
+			return b.handleError(ctx, versionID, "Failed to link Vercel project", err)
+		}
+	} else {
+		// Subsequent version - .vercel folder should exist from S3, just read project ID
+		log.Printf("[Vercel] Reusing existing .vercel folder from previous version\n")
+		vercelProjectID, err = b.getVercelProjectID(workspaceDir)
+		if err != nil {
+			log.Printf("[Vercel] Warning: Could not read project ID from .vercel folder: %v\n", err)
+		} else {
+			log.Printf("[Vercel] Project ID from existing .vercel folder: %s\n", vercelProjectID)
+		}
 	}
 
 	// Store Vercel project ID in apps table
@@ -272,12 +286,12 @@ func (b *Builder) BuildApp(ctx context.Context, versionID, appID, requirements s
 	return nil
 }
 
-func (b *Builder) setupWorkspace(ctx context.Context, workspaceDir, appID string) error {
+func (b *Builder) setupWorkspace(ctx context.Context, workspaceDir, appID string) (bool, error) {
 	// Try to get the latest version's code from S3
 	versions, err := b.VersionService.ListVersions(ctx, appID)
 	if err != nil || len(versions) == 0 {
 		// No previous version, copy starter code
-		return b.copyStarterCode(workspaceDir)
+		return true, b.copyStarterCode(workspaceDir)
 	}
 
 	// Find the latest completed version
@@ -290,11 +304,11 @@ func (b *Builder) setupWorkspace(ctx context.Context, workspaceDir, appID string
 	}
 
 	if latestVersion == nil {
-		return b.copyStarterCode(workspaceDir)
+		return true, b.copyStarterCode(workspaceDir)
 	}
 
 	// Download from S3 and extract
-	return b.downloadFromS3(ctx, *latestVersion.S3CodePath, workspaceDir)
+	return false, b.downloadFromS3(ctx, *latestVersion.S3CodePath, workspaceDir)
 }
 
 func (b *Builder) copyStarterCode(workspaceDir string) error {
@@ -542,7 +556,6 @@ func (b *Builder) packageCode(workspaceDir string) (string, error) {
 	// Directories to exclude from packaging
 	excludeDirs := map[string]bool{
 		"node_modules":   true,
-		".vercel":        true,
 		".agent-history": true,
 		"dist":           true,
 		".git":           true,
