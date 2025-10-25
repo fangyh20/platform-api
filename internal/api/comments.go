@@ -60,8 +60,8 @@ func (h *AppHandler) ListComments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get draft comments
-	comments, err := h.CommentService.GetDraftComments(r.Context(), appID, user.Sub)
+	// Get all comments (both draft and submitted)
+	comments, err := h.CommentService.GetAllComments(r.Context(), appID, user.Sub)
 	if err != nil {
 		middleware.RespondError(w, http.StatusInternalServerError, err.Error())
 		return

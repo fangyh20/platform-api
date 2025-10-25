@@ -53,6 +53,42 @@ func (s *CommentService) AddComment(ctx context.Context, userID, appID string, r
 	return &comment, nil
 }
 
+// GetAllComments retrieves all comments (both draft and submitted) for an app
+func (s *CommentService) GetAllComments(ctx context.Context, appID, userID string) ([]models.Comment, error) {
+	query := `
+		SELECT id, app_id, user_id, version_id, page_path, element_path, content, status, created_at, submitted_at
+		FROM comments
+		WHERE app_id = $1 AND user_id = $2
+		ORDER BY created_at ASC
+	`
+
+	rows, err := s.DB.Query(ctx, query, appID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get all comments: %w", err)
+	}
+	defer rows.Close()
+
+	var comments []models.Comment
+	for rows.Next() {
+		var comment models.Comment
+		err := rows.Scan(
+			&comment.ID, &comment.AppID, &comment.UserID, &comment.VersionID,
+			&comment.PagePath, &comment.ElementPath, &comment.Content,
+			&comment.Status, &comment.CreatedAt, &comment.SubmittedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan comment: %w", err)
+		}
+		comments = append(comments, comment)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating comments: %w", err)
+	}
+
+	return comments, nil
+}
+
 // GetDraftComments retrieves all draft comments for an app
 func (s *CommentService) GetDraftComments(ctx context.Context, appID, userID string) ([]models.Comment, error) {
 	query := `

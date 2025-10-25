@@ -92,10 +92,6 @@ func (b *Builder) BuildApp(ctx context.Context, versionID, appID, requirements s
 		log.Printf("[BuildApp] Warning: Failed to update status to building: %v\n", err)
 	}
 
-	// Wait 2 seconds to allow SSE clients to subscribe before sending first message
-	// This prevents missing initial progress messages due to race condition
-	time.Sleep(2 * time.Second)
-
 	b.sendProgress(versionID, "building", "Starting build process...")
 
 	// Create workspace using appID for easier troubleshooting
@@ -193,28 +189,6 @@ func (b *Builder) BuildApp(ctx context.Context, versionID, appID, requirements s
 		}
 	}
 
-	// Package core code
-	b.sendProgress(versionID, "building", "Packaging code...")
-	tarPath, err := b.packageCode(workspaceDir)
-	if err != nil {
-		return b.handleError(ctx, versionID, "Failed to package code", err)
-	}
-
-	// Upload to S3
-	b.sendProgress(versionID, "building", "Uploading to S3...")
-	s3Path, err := b.uploadToS3(ctx, tarPath, appID, versionID)
-	if err != nil {
-		return b.handleError(ctx, versionID, "Failed to upload to S3", err)
-	}
-
-	// Update version with S3 path
-	_, err = b.VersionService.UpdateVersion(ctx, versionID, map[string]interface{}{
-		"s3_code_path": s3Path,
-	})
-	if err != nil {
-		return b.handleError(ctx, versionID, "Failed to update S3 path", err)
-	}
-
 	// Deploy to Vercel (workspace is pre-built by Claude)
 	b.sendProgress(versionID, "building", "Deploying to Vercel...")
 	vercelURL, vercelDeployID, err := b.deployToVercel(ctx, workspaceDir, appID, versionID)
@@ -238,36 +212,63 @@ func (b *Builder) BuildApp(ctx context.Context, versionID, appID, requirements s
 		}
 	}
 
-	// Update version with Vercel URL
+	// Update version with Vercel URL and mark as completed
+	// User can now view the preview!
 	_, err = b.VersionService.UpdateVersion(ctx, versionID, map[string]interface{}{
 		"vercel_url":       vercelURL,
 		"vercel_deploy_id": vercelDeployID,
+		"status":           "completed",
 	})
 	if err != nil {
-		return b.handleError(ctx, versionID, "Failed to update Vercel URL", err)
-	}
-
-	b.sendProgress(versionID, "completed", "Build completed successfully!")
-
-	// Mark version as completed
-	_, err = b.VersionService.UpdateVersion(ctx, versionID, map[string]interface{}{
-		"status": "completed",
-	})
-	if err != nil {
-		log.Printf("[BuildApp] ERROR updating completion status for version %s: %v\n", versionID, err)
+		log.Printf("[BuildApp] ERROR updating version with Vercel URL and status: %v\n", err)
 		return b.handleError(ctx, versionID, "Failed to mark as completed", err)
 	}
 
-	// Update app status to active
-	_, err = b.AppService.UpdateApp(ctx, appID, "", map[string]interface{}{
-		"status": "active",
-	})
-	if err != nil {
-		log.Printf("[BuildApp] Warning: Failed to update app status for app %s: %v\n", appID, err)
-		// Don't fail the build if app status update fails
-	}
-
+	b.sendProgress(versionID, "completed", "Build completed successfully!")
 	log.Printf("[BuildApp] ✅ Build completed successfully for version %s\n", versionID)
+
+	// Launch async background tasks for S3 upload and app status update
+	// These are not critical for users to view the preview
+	go func() {
+		bgCtx := context.Background()
+
+		// Package core code for next iteration
+		log.Printf("[BuildApp] [Async] Packaging code for version %s\n", versionID)
+		tarPath, err := b.packageCode(workspaceDir)
+		if err != nil {
+			log.Printf("[BuildApp] [Async] Warning: Failed to package code: %v\n", err)
+			return
+		}
+
+		// Upload to S3
+		log.Printf("[BuildApp] [Async] Uploading to S3 for version %s\n", versionID)
+		s3Path, err := b.uploadToS3(bgCtx, tarPath, appID, versionID)
+		if err != nil {
+			log.Printf("[BuildApp] [Async] Warning: Failed to upload to S3: %v\n", err)
+			return
+		}
+
+		// Update version with S3 path
+		_, err = b.VersionService.UpdateVersion(bgCtx, versionID, map[string]interface{}{
+			"s3_code_path": s3Path,
+		})
+		if err != nil {
+			log.Printf("[BuildApp] [Async] Warning: Failed to update S3 path: %v\n", err)
+		} else {
+			log.Printf("[BuildApp] [Async] ✅ S3 upload completed for version %s\n", versionID)
+		}
+
+		// Update app status to active
+		_, err = b.AppService.UpdateApp(bgCtx, appID, "", map[string]interface{}{
+			"status": "active",
+		})
+		if err != nil {
+			log.Printf("[BuildApp] [Async] Warning: Failed to update app status: %v\n", err)
+		} else {
+			log.Printf("[BuildApp] [Async] ✅ App status updated to active for %s\n", appID)
+		}
+	}()
+
 	return nil
 }
 
