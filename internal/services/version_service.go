@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -235,16 +236,28 @@ func (s *VersionService) PromoteVersion(ctx context.Context, versionID string) e
 		return fmt.Errorf("version has no vercel deployment ID")
 	}
 
-	// Fetch app to get Vercel project ID
+	// Fetch app to get Vercel project ID, prod_version, and production_url
 	var app models.App
-	getAppQuery := `SELECT vercel_project_id FROM apps WHERE id = $1`
-	err = s.DB.QueryRow(ctx, getAppQuery, version.AppID).Scan(&app.VercelProjectID)
+	getAppQuery := `SELECT vercel_project_id, prod_version, production_url FROM apps WHERE id = $1`
+	err = s.DB.QueryRow(ctx, getAppQuery, version.AppID).Scan(&app.VercelProjectID, &app.ProdVersion, &app.ProductionURL)
 	if err != nil {
 		return fmt.Errorf("failed to fetch app: %w", err)
 	}
 
 	if app.VercelProjectID == nil || *app.VercelProjectID == "" {
 		return fmt.Errorf("app has no vercel project ID")
+	}
+
+	// If this is the first promotion, add the custom production domain to the project
+	if app.ProdVersion == nil && app.ProductionURL != nil && *app.ProductionURL != "" {
+		log.Printf("[PromoteVersion] First promotion - adding custom domain %s to project %s\n", *app.ProductionURL, *app.VercelProjectID)
+		err = s.VercelService.AddDomainToProject(*app.VercelProjectID, *app.ProductionURL)
+		if err != nil {
+			// Log warning but don't fail the promotion
+			log.Printf("[PromoteVersion] Warning: Failed to add custom domain to project: %v\n", err)
+		} else {
+			log.Printf("[PromoteVersion] ✅ Custom domain %s added to project\n", *app.ProductionURL)
+		}
 	}
 
 	// Call Vercel API to promote deployment

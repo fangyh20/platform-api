@@ -99,6 +99,53 @@ func (s *VercelService) Deploy(projectName, workspacePath string) (*VercelDeploy
 	return &deployment, nil
 }
 
+// AddDomainToProject adds a custom domain to a Vercel project
+// Uses Vercel API v10: POST /v10/projects/{projectId}/domains
+func (s *VercelService) AddDomainToProject(projectID, domainName string) error {
+	url := fmt.Sprintf("https://api.vercel.com/v10/projects/%s/domains", projectID)
+
+	reqBody := map[string]interface{}{
+		"name": domainName,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+s.Config.Token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	// Success
+	if resp.StatusCode == 200 {
+		return nil
+	}
+
+	// Domain already exists - treat as success
+	if resp.StatusCode == 400 {
+		bodyStr := string(body)
+		if strings.Contains(bodyStr, "already exists") || strings.Contains(bodyStr, "domain_already_exists") {
+			return nil
+		}
+	}
+
+	// Other errors
+	return fmt.Errorf("failed to add domain to project (status %d): %s", resp.StatusCode, string(body))
+}
+
 // PromoteDeployment promotes a deployment to production
 // Uses Vercel API v10: POST /v10/projects/{projectId}/promote/{deploymentId}
 // This points all production domains for the project to the given deployment
