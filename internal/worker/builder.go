@@ -775,43 +775,83 @@ func (b *Builder) deployToVercel(ctx context.Context, workspaceDir, appID, versi
 		return "", "", fmt.Errorf("Vercel deployment failed: %s", strings.TrimSpace(errorMsg))
 	}
 
-	// Parse deployment URL from output
-	// Vercel typically outputs the URL in the format: https://project-name-xxx.vercel.app
+	// Parse deployment URL and deployment ID from CLI output
+	// Vercel CLI outputs:
+	//   Inspect: https://vercel.com/.../PROJECT_ID/DEPLOYMENT_ID [time]
+	//   Preview: https://PROJECT-HASH.vercel.app [time]
+	output := stdout.String()
+	outputLines := strings.Split(output, "\n")
+
 	deploymentURL := ""
-	outputLines := strings.Split(stdout.String(), "\n")
+	deploymentID := ""
+
 	for _, line := range outputLines {
-		if strings.Contains(line, "https://") && strings.Contains(line, "vercel.app") {
-			// Extract URL from the line
+		// Parse Inspect URL to get deployment ID
+		if strings.Contains(line, "Inspect:") {
 			parts := strings.Fields(line)
-			for _, part := range parts {
-				if strings.HasPrefix(part, "https://") && strings.Contains(part, "vercel.app") {
-					deploymentURL = strings.TrimSpace(part)
+			for i, part := range parts {
+				if part == "Inspect:" && i+1 < len(parts) {
+					inspectURL := parts[i+1]
+					// Deployment ID is the last segment of the Inspect URL
+					urlParts := strings.Split(inspectURL, "/")
+					if len(urlParts) > 0 {
+						deploymentID = urlParts[len(urlParts)-1]
+					}
 					break
 				}
 			}
-			if deploymentURL != "" {
-				break
+		}
+
+		// Parse Preview URL
+		if strings.Contains(line, "Preview:") {
+			parts := strings.Fields(line)
+			for i, part := range parts {
+				if part == "Preview:" && i+1 < len(parts) {
+					deploymentURL = strings.TrimSpace(parts[i+1])
+					break
+				}
 			}
 		}
 	}
 
-	// Fallback to generating URL if parsing failed
+	// Fallback: try to parse deployment URL from bare URL lines if Preview not found
+	if deploymentURL == "" {
+		for _, line := range outputLines {
+			if strings.Contains(line, "https://") && strings.Contains(line, "vercel.app") {
+				// Extract URL from the line, handling cases like "...vercel.appQueued"
+				parts := strings.Fields(line)
+				for _, part := range parts {
+					if strings.HasPrefix(part, "https://") && strings.Contains(part, "vercel.app") {
+						// Split at ".app" to handle appended status
+						if idx := strings.Index(part, ".app"); idx != -1 {
+							deploymentURL = strings.TrimSpace(part[:idx+4])
+							break
+						}
+					}
+				}
+				if deploymentURL != "" {
+					break
+				}
+			}
+		}
+	}
+
+	// Final fallback: generate URL from workspace directory
 	if deploymentURL == "" {
 		folderName := filepath.Base(workspaceDir)
 		deploymentURL = fmt.Sprintf("https://%s.vercel.app", folderName)
 		log.Printf("[Vercel] Could not parse URL from output, using fallback: %s\n", deploymentURL)
 	}
 
-	log.Printf("[Vercel] Deployment successful: %s\n", deploymentURL)
-
-	// Get deployment ID from Vercel API using the URL
-	deploymentID, err := b.VercelService.GetDeploymentIDByURL(deploymentURL)
-	if err != nil {
-		log.Printf("[Vercel] Warning: Could not fetch deployment ID from API: %v, using versionID as fallback\n", err)
+	// Fallback for deployment ID: use versionID if parsing failed
+	if deploymentID == "" {
+		log.Printf("[Vercel] Warning: Could not parse deployment ID from output, using versionID as fallback\n")
 		deploymentID = versionID
 	} else {
-		log.Printf("[Vercel] Retrieved deployment ID from API: %s\n", deploymentID)
+		log.Printf("[Vercel] Parsed deployment ID from CLI output: %s\n", deploymentID)
 	}
+
+	log.Printf("[Vercel] Deployment successful: %s\n", deploymentURL)
 
 	return deploymentURL, deploymentID, nil
 }

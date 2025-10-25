@@ -189,51 +189,6 @@ func (s *VercelService) PromoteDeployment(projectID, deploymentID, productionDom
 	return fmt.Errorf("vercel domain update failed (status %d): %s", resp.StatusCode, string(body))
 }
 
-// GetDeploymentIDByURL fetches deployment details by URL and returns the deployment ID
-func (s *VercelService) GetDeploymentIDByURL(deploymentURL string) (string, error) {
-	// Extract hostname from URL (remove https:// and path)
-	hostname := strings.TrimPrefix(deploymentURL, "https://")
-	hostname = strings.TrimPrefix(hostname, "http://")
-	hostname = strings.Split(hostname, "/")[0]
-
-	url := fmt.Sprintf("https://api.vercel.com/v13/deployments/%s", hostname)
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return "", err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+s.Config.Token)
-
-	resp, err := s.Client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("failed to get deployment by URL (status %d): %s", resp.StatusCode, string(body))
-	}
-
-	var deployment struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(body, &deployment); err != nil {
-		return "", fmt.Errorf("failed to parse deployment response: %w", err)
-	}
-
-	if deployment.ID == "" {
-		return "", fmt.Errorf("deployment ID not found in response")
-	}
-
-	return deployment.ID, nil
-}
-
 // GetDeploymentStatus gets the status of a deployment
 func (s *VercelService) GetDeploymentStatus(deploymentID string) (*VercelDeployment, error) {
 	url := fmt.Sprintf("https://api.vercel.com/v13/deployments/%s", deploymentID)
