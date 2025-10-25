@@ -47,31 +47,32 @@ func (h *AppHandler) CreateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create app
+	// Create app (fast - only PostgreSQL, ~50ms)
 	app, err := h.AppService.CreateApp(r.Context(), user.Sub, req)
 	if err != nil {
 		middleware.RespondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	// Get owner email for app creation
-	ownerEmail, err := h.AppService.GetOwnerEmail(r.Context(), user.Sub)
-	if err != nil {
-		middleware.RespondError(w, http.StatusInternalServerError, "Failed to get owner email")
-		return
-	}
-
-	// Create initial version with requirements
+	// Create initial version with requirements (fast - only PostgreSQL, ~50ms)
 	version, err := h.VersionService.CreateVersion(r.Context(), app.ID, &req.Requirements)
 	if err != nil {
 		middleware.RespondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	// Start build process in background with new context (not request context)
-	// Pass owner email to create admin user in app
+	// Get owner email for build process (fast query, ~10ms)
+	ownerEmail, err := h.AppService.GetOwnerEmail(r.Context(), user.Sub)
+	if err != nil {
+		middleware.RespondError(w, http.StatusInternalServerError, "Failed to get owner email")
+		return
+	}
+
+	// Start build process immediately in background (non-blocking)
+	// Build assumes MongoDB will be created by async setup process
 	go h.Builder.BuildApp(context.Background(), version.ID, app.ID, req.Requirements, nil, ownerEmail)
 
+	// Return response immediately (~100ms total)
 	middleware.RespondJSON(w, http.StatusCreated, map[string]interface{}{
 		"app":     app,
 		"version": version,

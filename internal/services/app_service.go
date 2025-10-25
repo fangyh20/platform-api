@@ -46,38 +46,24 @@ func NewAppService(
 	}
 }
 
-// CreateApp creates a new app using AI-powered config extraction
+// CreateApp creates a new app with temporary defaults, then extracts AI config async
 func (s *AppService) CreateApp(ctx context.Context, userID string, req models.CreateAppRequest) (*models.App, error) {
-	// 1. Use Gemini to extract app configuration from description
-	appConfig, err := s.GeminiService.ExtractAppConfig(req.Description)
-	if err != nil {
-		log.Printf("Warning: Failed to extract config with Gemini, using defaults: %v", err)
-		// Fallback to defaults if Gemini fails
-		appConfig = &AppConfig{
-			AppName:      "MyApp",
-			DisplayName:  "My App",
-			RequiresAuth: true,
-			AllowSignup:  true,
-			Category:     "other",
-			Keywords:     []string{"app"},
-			ColorScheme:  "blue",
-		}
-	}
-
-	// 2. Create app with extracted configuration
+	// 1. Create app immediately with temporary defaults (fast PostgreSQL-only operation)
 	appID := uuid.New().String()
-
-	// Generate production URL
-	productionURL := utils.GenerateProductionDomain(appConfig.AppName, appID)
+	tempName := "MyApp"
+	tempDisplayName := "My App"
+	tempCategory := "other"
+	tempColorScheme := "blue"
+	productionURL := utils.GenerateProductionDomain(tempName, appID)
 
 	app := models.App{
 		ID:            appID,
 		UserID:        userID,
-		Name:          appConfig.AppName,
-		DisplayName:   &appConfig.DisplayName,
+		Name:          tempName,
+		DisplayName:   &tempDisplayName,
 		Description:   req.Description,
-		Category:      &appConfig.Category,
-		ColorScheme:   &appConfig.ColorScheme,
+		Category:      &tempCategory,
+		ColorScheme:   &tempColorScheme,
 		Status:        "building",
 		ProductionURL: &productionURL,
 		CreatedAt:     time.Now(),
@@ -90,7 +76,7 @@ func (s *AppService) CreateApp(ctx context.Context, userID string, req models.Cr
 		RETURNING id, user_id, name, display_name, description, category, color_scheme, logo, status, prod_version, production_url, created_at, updated_at
 	`
 
-	err = s.DB.QueryRow(ctx, query,
+	err := s.DB.QueryRow(ctx, query,
 		app.ID, app.UserID, app.Name, app.DisplayName, app.Description,
 		app.Category, app.ColorScheme, app.Status, app.ProductionURL, app.CreatedAt, app.UpdatedAt,
 	).Scan(
@@ -103,14 +89,63 @@ func (s *AppService) CreateApp(ctx context.Context, userID string, req models.Cr
 		return nil, fmt.Errorf("failed to create app: %w", err)
 	}
 
+	// 2. Launch async AI config extraction and MongoDB creation (non-blocking)
+	go s.extractConfigAndSetupApp(appID, userID, req.Description)
+
+	return &app, nil
+}
+
+// extractConfigAndSetupApp runs async to extract AI config and setup MongoDB with final name
+func (s *AppService) extractConfigAndSetupApp(appID, userID, description string) {
+	ctx := context.Background()
+
+	log.Printf("[AI Setup] Starting async config extraction for app %s", appID)
+
+	// 1. Use Gemini to extract app configuration from description
+	appConfig, err := s.GeminiService.ExtractAppConfig(description)
+	if err != nil {
+		log.Printf("[AI Setup] Warning: Failed to extract config with Gemini, using defaults: %v", err)
+		// Fallback to defaults if Gemini fails
+		appConfig = &AppConfig{
+			AppName:      "MyApp",
+			DisplayName:  "My App",
+			RequiresAuth: true,
+			AllowSignup:  true,
+			Category:     "other",
+			Keywords:     []string{"app"},
+			ColorScheme:  "blue",
+		}
+	}
+
+	log.Printf("[AI Setup] Extracted config for app %s: name=%s, category=%s, color=%s",
+		appID, appConfig.AppName, appConfig.Category, appConfig.ColorScheme)
+
+	// 2. Update PostgreSQL with AI-generated configuration
+	productionURL := utils.GenerateProductionDomain(appConfig.AppName, appID)
+	updateQuery := `
+		UPDATE apps
+		SET name = $1, display_name = $2, category = $3, color_scheme = $4, production_url = $5, updated_at = $6
+		WHERE id = $7
+	`
+	_, err = s.DB.Exec(ctx, updateQuery,
+		appConfig.AppName, appConfig.DisplayName, appConfig.Category,
+		appConfig.ColorScheme, productionURL, time.Now(), appID,
+	)
+	if err != nil {
+		log.Printf("[AI Setup] Failed to update PostgreSQL with AI config: %v", err)
+		return
+	}
+
+	log.Printf("[AI Setup] Updated PostgreSQL for app %s with AI-generated name '%s'", appID, appConfig.AppName)
+
 	// 3. Get owner email for MongoDB app creation
 	ownerEmail, err := s.GetOwnerEmail(ctx, userID)
 	if err != nil {
-		log.Printf("Warning: Failed to get owner email: %v", err)
+		log.Printf("[AI Setup] Warning: Failed to get owner email: %v", err)
 		ownerEmail = "unknown@example.com"
 	}
 
-	// 4. Create app in MongoDB immediately with app name
+	// 4. Create app in MongoDB with final AI-generated name (not temporary)
 	cmd := exec.CommandContext(ctx, "app-manager", "create", appID, "--name", appConfig.AppName, "--owner-email", ownerEmail)
 	cmd.Env = append(os.Environ(),
 		"PATH=/home/ubuntu/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin",
@@ -122,15 +157,15 @@ func (s *AppService) CreateApp(ctx context.Context, userID string, req models.Cr
 
 	err = cmd.Run()
 	if err != nil {
-		log.Printf("[CreateApp] Warning: Failed to create app in MongoDB: %v (stderr: %s)", err, stderr.String())
+		log.Printf("[AI Setup] Warning: Failed to create MongoDB app: %v (stderr: %s)", err, stderr.String())
 	} else {
-		log.Printf("[CreateApp] Created app in MongoDB with name '%s'", appConfig.AppName)
+		log.Printf("[AI Setup] Created MongoDB app with AI-generated name '%s'", appConfig.AppName)
 	}
 
 	// 5. Launch async logo generation (non-blocking)
 	go s.generateAndUploadLogo(appID, appConfig.AppName, appConfig.Category, appConfig.ColorScheme)
 
-	return &app, nil
+	log.Printf("[AI Setup] Completed async setup for app %s", appID)
 }
 
 // GetApp retrieves an app by ID
