@@ -273,10 +273,5 @@ func (s *VersionService) PromoteVersion(ctx context.Context, versionID string) e
 		return fmt.Errorf("failed to update app prod_version: %w", err)
 	}
 
-	// Update version status to promoted
-	_, err = s.UpdateVersion(ctx, versionID, map[string]interface{}{
-		"status": "promoted",
-	})
-
-	return err
+	return nil
 }
