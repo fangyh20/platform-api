@@ -12,11 +12,15 @@ import (
 )
 
 type VersionService struct {
-	DB *db.PostgresClient
+	DB            *db.PostgresClient
+	VercelService *VercelService
 }
 
-func NewVersionService(dbClient *db.PostgresClient) *VersionService {
-	return &VersionService{DB: dbClient}
+func NewVersionService(dbClient *db.PostgresClient, vercelService *VercelService) *VersionService {
+	return &VersionService{
+		DB:            dbClient,
+		VercelService: vercelService,
+	}
 }
 
 // CreateVersion creates a new version for an app
@@ -216,21 +220,47 @@ func (s *VersionService) DeleteVersion(ctx context.Context, versionID string) er
 
 // PromoteVersion promotes a version to production
 func (s *VersionService) PromoteVersion(ctx context.Context, versionID string) error {
+	// Get the version to promote
 	version, err := s.GetVersion(ctx, versionID)
 	if err != nil {
 		return err
 	}
 
-	// Update the app's prod_version
-	appService := NewAppService(s.DB)
-	_, err = appService.UpdateApp(ctx, version.AppID, "", map[string]interface{}{
-		"prod_version": version.VersionNumber,
-	})
-	if err != nil {
-		return err
+	// Validate version can be promoted
+	if version.Status != "completed" {
+		return fmt.Errorf("cannot promote version with status '%s', must be 'completed'", version.Status)
 	}
 
-	// Update version status
+	if version.VercelDeployID == nil || *version.VercelDeployID == "" {
+		return fmt.Errorf("version has no vercel deployment ID")
+	}
+
+	// Fetch app to get Vercel project ID
+	var app models.App
+	getAppQuery := `SELECT vercel_project_id FROM apps WHERE id = $1`
+	err = s.DB.QueryRow(ctx, getAppQuery, version.AppID).Scan(&app.VercelProjectID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch app: %w", err)
+	}
+
+	if app.VercelProjectID == nil || *app.VercelProjectID == "" {
+		return fmt.Errorf("app has no vercel project ID")
+	}
+
+	// Call Vercel API to promote deployment
+	err = s.VercelService.PromoteDeployment(*app.VercelProjectID, *version.VercelDeployID)
+	if err != nil {
+		return fmt.Errorf("failed to promote deployment on Vercel: %w", err)
+	}
+
+	// Update the app's prod_version
+	updateQuery := `UPDATE apps SET prod_version = $1, updated_at = $2 WHERE id = $3`
+	_, err = s.DB.Exec(ctx, updateQuery, version.VersionNumber, time.Now(), version.AppID)
+	if err != nil {
+		return fmt.Errorf("failed to update app prod_version: %w", err)
+	}
+
+	// Update version status to promoted
 	_, err = s.UpdateVersion(ctx, versionID, map[string]interface{}{
 		"status": "promoted",
 	})

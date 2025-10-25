@@ -146,6 +146,29 @@ func (s *CommentService) SubmitComments(ctx context.Context, commentIDs []string
 	return nil
 }
 
+// UpdateComment updates the content of a draft comment
+func (s *CommentService) UpdateComment(ctx context.Context, commentID, userID, newContent string) (*models.Comment, error) {
+	query := `
+		UPDATE comments
+		SET content = $1
+		WHERE id = $2 AND user_id = $3 AND status = 'draft'
+		RETURNING id, app_id, user_id, version_id, page_path, element_path, content, status, created_at, submitted_at
+	`
+
+	var comment models.Comment
+	err := s.DB.QueryRow(ctx, query, newContent, commentID, userID).Scan(
+		&comment.ID, &comment.AppID, &comment.UserID, &comment.VersionID,
+		&comment.PagePath, &comment.ElementPath, &comment.Content,
+		&comment.Status, &comment.CreatedAt, &comment.SubmittedAt,
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to update comment: %w", err)
+	}
+
+	return &comment, nil
+}
+
 // DeleteComment deletes a draft comment
 func (s *CommentService) DeleteComment(ctx context.Context, commentID, userID string) error {
 	query := `DELETE FROM comments WHERE id = $1 AND user_id = $2 AND status = 'draft'`

@@ -1,51 +1,134 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
+	"os"
+	"os/exec"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
+	"github.com/rapidbuildapp/rapidbuild/config"
 	"github.com/rapidbuildapp/rapidbuild/internal/db"
 	"github.com/rapidbuildapp/rapidbuild/internal/models"
+	"github.com/rapidbuildapp/rapidbuild/internal/utils"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type AppService struct {
-	DB *db.PostgresClient
+	DB             *db.PostgresClient
+	MongoClient    *mongo.Client
+	GeminiService  *GeminiService
+	RunwareService *RunwareService
+	S3Client       *s3.Client
+	Config         *config.Config
 }
 
-func NewAppService(dbClient *db.PostgresClient) *AppService {
-	return &AppService{DB: dbClient}
+func NewAppService(
+	dbClient *db.PostgresClient,
+	mongoClient *mongo.Client,
+	geminiService *GeminiService,
+	runwareService *RunwareService,
+	s3Client *s3.Client,
+	cfg *config.Config,
+) *AppService {
+	return &AppService{
+		DB:             dbClient,
+		MongoClient:    mongoClient,
+		GeminiService:  geminiService,
+		RunwareService: runwareService,
+		S3Client:       s3Client,
+		Config:         cfg,
+	}
 }
 
-// CreateApp creates a new app and starts the initial build
+// CreateApp creates a new app using AI-powered config extraction
 func (s *AppService) CreateApp(ctx context.Context, userID string, req models.CreateAppRequest) (*models.App, error) {
+	// 1. Use Gemini to extract app configuration from description
+	appConfig, err := s.GeminiService.ExtractAppConfig(req.Description)
+	if err != nil {
+		log.Printf("Warning: Failed to extract config with Gemini, using defaults: %v", err)
+		// Fallback to defaults if Gemini fails
+		appConfig = &AppConfig{
+			AppName:      "MyApp",
+			DisplayName:  "My App",
+			RequiresAuth: true,
+			AllowSignup:  true,
+			Category:     "other",
+			Keywords:     []string{"app"},
+			ColorScheme:  "blue",
+		}
+	}
+
+	// 2. Create app with extracted configuration
+	appID := uuid.New().String()
+
+	// Generate production URL
+	productionURL := utils.GenerateProductionDomain(appConfig.AppName, appID)
+
 	app := models.App{
-		ID:          uuid.New().String(),
-		UserID:      userID,
-		Name:        req.Name,
-		Description: req.Description,
-		Status:      "building",
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		ID:            appID,
+		UserID:        userID,
+		Name:          appConfig.AppName,
+		DisplayName:   &appConfig.DisplayName,
+		Description:   req.Description,
+		Category:      &appConfig.Category,
+		ColorScheme:   &appConfig.ColorScheme,
+		Status:        "building",
+		ProductionURL: &productionURL,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
 	}
 
 	query := `
-		INSERT INTO apps (id, user_id, name, description, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id, user_id, name, description, status, prod_version, created_at, updated_at
+		INSERT INTO apps (id, user_id, name, display_name, description, category, color_scheme, status, production_url, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		RETURNING id, user_id, name, display_name, description, category, color_scheme, logo, status, prod_version, production_url, created_at, updated_at
 	`
 
-	err := s.DB.QueryRow(ctx, query,
-		app.ID, app.UserID, app.Name, app.Description, app.Status, app.CreatedAt, app.UpdatedAt,
+	err = s.DB.QueryRow(ctx, query,
+		app.ID, app.UserID, app.Name, app.DisplayName, app.Description,
+		app.Category, app.ColorScheme, app.Status, app.ProductionURL, app.CreatedAt, app.UpdatedAt,
 	).Scan(
-		&app.ID, &app.UserID, &app.Name, &app.Description, &app.Status,
-		&app.ProdVersion, &app.CreatedAt, &app.UpdatedAt,
+		&app.ID, &app.UserID, &app.Name, &app.DisplayName, &app.Description,
+		&app.Category, &app.ColorScheme, &app.Logo, &app.Status,
+		&app.ProdVersion, &app.ProductionURL, &app.CreatedAt, &app.UpdatedAt,
 	)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to create app: %w", err)
 	}
+
+	// 3. Get owner email for MongoDB app creation
+	ownerEmail, err := s.GetOwnerEmail(ctx, userID)
+	if err != nil {
+		log.Printf("Warning: Failed to get owner email: %v", err)
+		ownerEmail = "unknown@example.com"
+	}
+
+	// 4. Create app in MongoDB immediately with app name
+	cmd := exec.CommandContext(ctx, "app-manager", "create", appID, "--name", appConfig.AppName, "--owner-email", ownerEmail)
+	cmd.Env = append(os.Environ(),
+		"PATH=/home/ubuntu/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin",
+	)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+	if err != nil {
+		log.Printf("[CreateApp] Warning: Failed to create app in MongoDB: %v (stderr: %s)", err, stderr.String())
+	} else {
+		log.Printf("[CreateApp] Created app in MongoDB with name '%s'", appConfig.AppName)
+	}
+
+	// 5. Launch async logo generation (non-blocking)
+	go s.generateAndUploadLogo(appID, appConfig.AppName, appConfig.Category, appConfig.ColorScheme)
 
 	return &app, nil
 }
@@ -54,14 +137,15 @@ func (s *AppService) CreateApp(ctx context.Context, userID string, req models.Cr
 func (s *AppService) GetApp(ctx context.Context, appID, userID string) (*models.App, error) {
 	app := &models.App{}
 	query := `
-		SELECT id, user_id, name, description, status, prod_version, created_at, updated_at
+		SELECT id, user_id, name, display_name, description, logo, category, color_scheme, status, prod_version, production_url, created_at, updated_at
 		FROM apps
 		WHERE id = $1 AND user_id = $2
 	`
 
 	err := s.DB.QueryRow(ctx, query, appID, userID).Scan(
-		&app.ID, &app.UserID, &app.Name, &app.Description, &app.Status,
-		&app.ProdVersion, &app.CreatedAt, &app.UpdatedAt,
+		&app.ID, &app.UserID, &app.Name, &app.DisplayName, &app.Description,
+		&app.Logo, &app.Category, &app.ColorScheme, &app.Status,
+		&app.ProdVersion, &app.ProductionURL, &app.CreatedAt, &app.UpdatedAt,
 	)
 
 	if err != nil {
@@ -74,7 +158,7 @@ func (s *AppService) GetApp(ctx context.Context, appID, userID string) (*models.
 // ListApps retrieves all apps for a user
 func (s *AppService) ListApps(ctx context.Context, userID string) ([]models.App, error) {
 	query := `
-		SELECT id, user_id, name, description, status, prod_version, created_at, updated_at
+		SELECT id, user_id, name, display_name, description, logo, category, color_scheme, status, prod_version, production_url, created_at, updated_at
 		FROM apps
 		WHERE user_id = $1
 		ORDER BY created_at DESC
@@ -90,8 +174,9 @@ func (s *AppService) ListApps(ctx context.Context, userID string) ([]models.App,
 	for rows.Next() {
 		var app models.App
 		err := rows.Scan(
-			&app.ID, &app.UserID, &app.Name, &app.Description, &app.Status,
-			&app.ProdVersion, &app.CreatedAt, &app.UpdatedAt,
+			&app.ID, &app.UserID, &app.Name, &app.DisplayName, &app.Description,
+			&app.Logo, &app.Category, &app.ColorScheme, &app.Status,
+			&app.ProdVersion, &app.ProductionURL, &app.CreatedAt, &app.UpdatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan app: %w", err)
@@ -199,7 +284,8 @@ func (s *AppService) GetAppWithOwnerEmail(ctx context.Context, appID, userID str
 	app := &models.App{}
 
 	query := `
-		SELECT a.id, a.user_id, a.name, a.description, a.status, a.prod_version,
+		SELECT a.id, a.user_id, a.name, a.display_name, a.description, a.logo,
+		       a.category, a.color_scheme, a.status, a.prod_version, a.production_url,
 		       a.created_at, a.updated_at, u.email
 		FROM apps a
 		JOIN users u ON a.user_id = u.id
@@ -207,8 +293,9 @@ func (s *AppService) GetAppWithOwnerEmail(ctx context.Context, appID, userID str
 	`
 
 	err := s.DB.QueryRow(ctx, query, appID, userID).Scan(
-		&app.ID, &app.UserID, &app.Name, &app.Description, &app.Status,
-		&app.ProdVersion, &app.CreatedAt, &app.UpdatedAt, &email,
+		&app.ID, &app.UserID, &app.Name, &app.DisplayName, &app.Description,
+		&app.Logo, &app.Category, &app.ColorScheme, &app.Status,
+		&app.ProdVersion, &app.ProductionURL, &app.CreatedAt, &app.UpdatedAt, &email,
 	)
 
 	if err != nil {
@@ -216,4 +303,72 @@ func (s *AppService) GetAppWithOwnerEmail(ctx context.Context, appID, userID str
 	}
 
 	return app, email, nil
+}
+
+// generateAndUploadLogo generates logo using AI and uploads to S3 (runs async)
+func (s *AppService) generateAndUploadLogo(appID, appName, category, colorScheme string) {
+	ctx := context.Background()
+
+	log.Printf("[Logo] Starting async logo generation for app %s (%s)", appID, appName)
+
+	// 1. Generate logo using Runware
+	imageURL, err := s.RunwareService.GenerateLogo(appName, category, colorScheme)
+	if err != nil {
+		log.Printf("[Logo] Failed to generate logo for app %s: %v", appID, err)
+		return
+	}
+	log.Printf("[Logo] Generated logo for app %s: %s", appID, imageURL)
+
+	// 2. Download image
+	imageData, err := s.RunwareService.DownloadImage(imageURL)
+	if err != nil {
+		log.Printf("[Logo] Failed to download logo for app %s: %v", appID, err)
+		return
+	}
+	log.Printf("[Logo] Downloaded logo for app %s (%d bytes)", appID, len(imageData))
+
+	// 3. Upload to S3 (bucket policy handles public access)
+	s3Key := fmt.Sprintf("apps/%s/logo.png", appID)
+	_, err = s.S3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.Config.S3Bucket),
+		Key:         aws.String(s3Key),
+		Body:        bytes.NewReader(imageData),
+		ContentType: aws.String("image/png"),
+	})
+	if err != nil {
+		log.Printf("[Logo] Failed to upload logo to S3 for app %s: %v", appID, err)
+		return
+	}
+
+	// Convert S3 path to HTTPS URL
+	httpsURL := fmt.Sprintf("https://%s.s3.amazonaws.com/%s", s.Config.S3Bucket, s3Key)
+	log.Printf("[Logo] Uploaded logo to S3 for app %s: %s", appID, httpsURL)
+
+	// 4. Update PostgreSQL with HTTPS URL
+	query := `UPDATE apps SET logo = $1, updated_at = $2 WHERE id = $3`
+	_, err = s.DB.Exec(ctx, query, httpsURL, time.Now(), appID)
+	if err != nil {
+		log.Printf("[Logo] Failed to update PostgreSQL for app %s: %v", appID, err)
+		return
+	}
+	log.Printf("[Logo] Updated PostgreSQL with logo for app %s", appID)
+
+	// 5. Update MongoDB (both name and logo) using app-manager CLI
+	cmd := exec.CommandContext(ctx, "app-manager", "update", appID, "--name", appName, "--logo", httpsURL)
+	cmd.Env = append(os.Environ(),
+		"PATH=/home/ubuntu/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin",
+	)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+	if err != nil {
+		log.Printf("[Logo] Failed to update MongoDB via app-manager for app %s: %v (stderr: %s)", appID, err, stderr.String())
+		return
+	}
+	log.Printf("[Logo] Updated MongoDB with name '%s' and logo for app %s via app-manager", appName, appID)
+
+	log.Printf("[Logo] Successfully completed logo generation for app %s", appID)
 }

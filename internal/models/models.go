@@ -19,14 +19,20 @@ type User struct {
 
 // App represents a user's application
 type App struct {
-	ID          string    `json:"id" db:"id"`
-	UserID      string    `json:"user_id" db:"user_id"`
-	Name        string    `json:"name" db:"name"`
-	Description string    `json:"description" db:"description"`
-	Status      string    `json:"status" db:"status"` // draft, building, active, error
-	ProdVersion *int      `json:"prod_version" db:"prod_version"`
-	CreatedAt   time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
+	ID               string    `json:"id" db:"id"`
+	UserID           string    `json:"user_id" db:"user_id"`
+	Name             string    `json:"name" db:"name"`
+	DisplayName      *string   `json:"display_name,omitempty" db:"display_name"`
+	Description      string    `json:"description" db:"description"`
+	Logo             *string   `json:"logo,omitempty" db:"logo"` // S3 URI
+	Category         *string   `json:"category,omitempty" db:"category"`
+	ColorScheme      *string   `json:"color_scheme,omitempty" db:"color_scheme"`
+	Status           string    `json:"status" db:"status"` // draft, building, active, error
+	ProdVersion      *int      `json:"prod_version" db:"prod_version"`
+	ProductionURL    *string   `json:"production_url,omitempty" db:"production_url"`
+	VercelProjectID  *string   `json:"vercel_project_id,omitempty" db:"vercel_project_id"`
+	CreatedAt        time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // Version represents a version of an app

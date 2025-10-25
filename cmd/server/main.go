@@ -84,12 +84,18 @@ func main() {
 	authService := services.NewAuthService(pgClient, cfg, emailService)
 	oauthService := services.NewOAuthService(pgClient, cfg, authService)
 
-	// Initialize services
-	appService := services.NewAppService(pgClient)
-	versionService := services.NewVersionService(pgClient)
+	// Initialize AI services
+	geminiService := services.NewGeminiService(cfg.GeminiAPIKey)
+	runwareService := services.NewRunwareService(cfg.RunwareAPIKey)
+
+	// Initialize Vercel service first (needed by versionService)
+	vercelService := services.NewVercelService(cfg)
+
+	// Initialize app services
+	appService := services.NewAppService(pgClient, mongoClient, geminiService, runwareService, s3Client, cfg)
+	versionService := services.NewVersionService(pgClient, vercelService)
 	commentService := services.NewCommentService(pgClient)
 	uploadService := services.NewUploadService(pgClient, s3Client, cfg)
-	vercelService := services.NewVercelService(cfg)
 
 	// Initialize Redis client (Upstash)
 	var redisClient *redis.Client
@@ -167,6 +173,7 @@ func main() {
 	// Comment routes
 	api.HandleFunc("/apps/{appId}/comments", appHandler.ListComments).Methods("GET", "OPTIONS")
 	api.HandleFunc("/apps/{appId}/comments", appHandler.AddComment).Methods("POST", "OPTIONS")
+	api.HandleFunc("/apps/{appId}/comments/{commentId}", appHandler.UpdateComment).Methods("PUT", "OPTIONS")
 	api.HandleFunc("/apps/{appId}/comments/{commentId}", appHandler.DeleteComment).Methods("DELETE", "OPTIONS")
 	api.HandleFunc("/apps/{appId}/versions/{versionId}/comments", appHandler.GetVersionComments).Methods("GET", "OPTIONS")
 

@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS apps (
     description TEXT,
     status TEXT NOT NULL DEFAULT 'draft',
     prod_version INTEGER,
+    production_url TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -104,6 +105,7 @@ CREATE INDEX IF NOT EXISTS idx_password_resets_expires_at ON password_resets(exp
 -- Indexes for apps
 CREATE INDEX IF NOT EXISTS idx_apps_user_id ON apps(user_id);
 CREATE INDEX IF NOT EXISTS idx_apps_status ON apps(status);
+CREATE INDEX IF NOT EXISTS idx_apps_production_url ON apps(production_url);
 
 -- Indexes for versions
 CREATE INDEX IF NOT EXISTS idx_versions_app_id ON versions(app_id);

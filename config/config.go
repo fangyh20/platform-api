@@ -51,6 +51,10 @@ type Config struct {
 
 	// Redis (Upstash - for build progress pub/sub)
 	RedisURL string
+
+	// AI Services
+	GeminiAPIKey  string
+	RunwareAPIKey string
 }
 
 func Load() *Config {
@@ -104,6 +108,10 @@ func Load() *Config {
 
 		// Redis
 		RedisURL: getEnv("REDIS_URL", ""),
+
+		// AI Services
+		GeminiAPIKey:  getEnv("GEMINI_API_KEY", "AIzaSyBbBZUcnRAS5_Dmcx9T7HSjYIhaQa0wRLM"),
+		RunwareAPIKey: getEnv("RUNWARE_API_KEY", "Tv0VryJVLo77RlrL4tmuXpMpp4UJWrFy"),
 	}
 }
 

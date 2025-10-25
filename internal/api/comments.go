@@ -98,6 +98,34 @@ func (h *AppHandler) GetVersionComments(w http.ResponseWriter, r *http.Request) 
 	middleware.RespondJSON(w, http.StatusOK, comments)
 }
 
+// UpdateComment handles PUT /apps/{appId}/comments/{commentId}
+func (h *AppHandler) UpdateComment(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.GetUserFromContext(r.Context())
+	if !ok {
+		middleware.RespondError(w, http.StatusUnauthorized, "User not found in context")
+		return
+	}
+
+	vars := mux.Vars(r)
+	commentID := vars["commentId"]
+
+	var req struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		middleware.RespondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	comment, err := h.CommentService.UpdateComment(r.Context(), commentID, user.Sub, req.Content)
+	if err != nil {
+		middleware.RespondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	middleware.RespondJSON(w, http.StatusOK, comment)
+}
+
 // DeleteComment handles DELETE /apps/{appId}/comments/{commentId}
 func (h *AppHandler) DeleteComment(w http.ResponseWriter, r *http.Request) {
 	user, ok := middleware.GetUserFromContext(r.Context())

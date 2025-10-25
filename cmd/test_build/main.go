@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 	appConfig "github.com/rapidbuildapp/rapidbuild/config"
 	"github.com/rapidbuildapp/rapidbuild/internal/db"
 	"github.com/rapidbuildapp/rapidbuild/internal/services"
@@ -46,11 +47,18 @@ func main() {
 	}
 	s3Client := s3.NewFromConfig(awsCfg)
 
-	// Create services
-	versionService := services.NewVersionService(dbClient)
+	// Create services (minimal for test)
+	vercelService := services.NewVercelService(cfg)
+	versionService := services.NewVersionService(dbClient, vercelService)
+
+	// appService (nil is ok for test)
+	var appService *services.AppService
+
+	// redisClient (nil is ok for test)
+	var redisClient *redis.Client
 
 	// Create builder
-	builder := worker.NewBuilder(cfg, versionService, s3Client)
+	builder := worker.NewBuilder(cfg, appService, versionService, vercelService, s3Client, redisClient)
 
 	// Test parameters
 	versionID := "22222222-aaaa-bbbb-cccc-222222222222"
@@ -60,7 +68,7 @@ func main() {
 	fmt.Printf("Starting build for version %s, app %s\n", versionID, appID)
 
 	// Run build
-	err = builder.BuildApp(context.Background(), versionID, appID, requirements, nil)
+	err = builder.BuildApp(context.Background(), versionID, appID, requirements, nil, "")
 	if err != nil {
 		log.Fatalf("Build failed: %v", err)
 	}

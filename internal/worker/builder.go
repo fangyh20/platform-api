@@ -113,8 +113,20 @@ func (b *Builder) BuildApp(ctx context.Context, versionID, appID, requirements s
 
 	// Link Vercel project before Claude runs
 	b.sendProgress(versionID, "building", "Linking Vercel project...")
-	if err := b.linkVercel(ctx, workspaceDir, versionID); err != nil {
+	vercelProjectID, err := b.linkVercel(ctx, workspaceDir, versionID)
+	if err != nil {
 		return b.handleError(ctx, versionID, "Failed to link Vercel project", err)
+	}
+
+	// Store Vercel project ID in apps table
+	if vercelProjectID != "" {
+		updateQuery := `UPDATE apps SET vercel_project_id = $1, updated_at = $2 WHERE id = $3`
+		_, err = b.VersionService.DB.Exec(ctx, updateQuery, vercelProjectID, time.Now(), appID)
+		if err != nil {
+			log.Printf("[Vercel] Warning: Failed to store Vercel project ID: %v\n", err)
+		} else {
+			log.Printf("[Vercel] Stored project ID %s for app %s\n", vercelProjectID, appID)
+		}
 	}
 
 	// Prepare prompt for Claude
@@ -167,7 +179,15 @@ func (b *Builder) BuildApp(ctx context.Context, versionID, appID, requirements s
 	schemasDir := filepath.Join(workspaceDir, "schemas")
 	if _, err := os.Stat(schemasDir); err == nil {
 		b.sendProgress(versionID, "building", "Setting up database schema...")
-		if err := b.setupDatabase(ctx, schemasDir, appID, ownerEmail); err != nil {
+
+		// Fetch app details to pass to app-manager (for logo, name, etc.)
+		app, err := b.AppService.GetApp(ctx, appID, "")
+		if err != nil {
+			log.Printf("[BuildApp] Warning: Failed to fetch app details: %v\n", err)
+			app = nil
+		}
+
+		if err := b.setupDatabase(ctx, schemasDir, appID, ownerEmail, app); err != nil {
 			// Log warning but don't fail the build - database setup is optional
 			log.Printf("[BuildApp] Warning: Failed to setup database for app %s: %v\n", appID, err)
 		}
@@ -669,8 +689,8 @@ func (b *Builder) getVercelProjectID(workspaceDir string) (string, error) {
 	return projectData.ProjectID, nil
 }
 
-// linkVercel links the workspace to a Vercel project
-func (b *Builder) linkVercel(ctx context.Context, workspaceDir, versionID string) error {
+// linkVercel links the workspace to a Vercel project and returns the project ID
+func (b *Builder) linkVercel(ctx context.Context, workspaceDir, versionID string) (string, error) {
 	// Create context with timeout (2 minutes for link)
 	linkCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
@@ -692,17 +712,26 @@ func (b *Builder) linkVercel(ctx context.Context, workspaceDir, versionID string
 
 	if err := cmd.Run(); err != nil {
 		if linkCtx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("Vercel link timed out after 2 minutes")
+			return "", fmt.Errorf("Vercel link timed out after 2 minutes")
 		}
 		errorMsg := stderr.String()
 		if errorMsg == "" {
 			errorMsg = err.Error()
 		}
-		return fmt.Errorf("Vercel link failed: %s", strings.TrimSpace(errorMsg))
+		return "", fmt.Errorf("Vercel link failed: %s", strings.TrimSpace(errorMsg))
 	}
 
 	log.Printf("[Vercel] Link output: %s\n", stdout.String())
-	return nil
+
+	// Read the project ID from .vercel/project.json
+	projectID, err := b.getVercelProjectID(workspaceDir)
+	if err != nil {
+		log.Printf("[Vercel] Warning: Could not read project ID: %v\n", err)
+		return "", nil
+	}
+
+	log.Printf("[Vercel] Project ID: %s\n", projectID)
+	return projectID, nil
 }
 
 // deployToVercel deploys the pre-built workspace to Vercel
@@ -775,8 +804,14 @@ func (b *Builder) deployToVercel(ctx context.Context, workspaceDir, appID, versi
 
 	log.Printf("[Vercel] Deployment successful: %s\n", deploymentURL)
 
-	// For deployment ID, use the versionID
-	deploymentID := versionID
+	// Get deployment ID from Vercel API using the URL
+	deploymentID, err := b.VercelService.GetDeploymentIDByURL(deploymentURL)
+	if err != nil {
+		log.Printf("[Vercel] Warning: Could not fetch deployment ID from API: %v, using versionID as fallback\n", err)
+		deploymentID = versionID
+	} else {
+		log.Printf("[Vercel] Retrieved deployment ID from API: %s\n", deploymentID)
+	}
 
 	return deploymentURL, deploymentID, nil
 }
@@ -838,17 +873,21 @@ func (b *Builder) handleError(ctx context.Context, versionID, message string, er
 	return fmt.Errorf(fullMsg)
 }
 
-// setupDatabase creates app database and collections using app-manager CLI
-func (b *Builder) setupDatabase(ctx context.Context, schemasDir, appID, ownerEmail string) error {
-	log.Printf("[Database] Setting up database for app %s (owner: %s) with schemas from %s\n", appID, ownerEmail, schemasDir)
+// setupDatabase updates database schemas using app-manager CLI
+// Note: App already exists in MongoDB (created in CreateApp), this only updates schemas
+func (b *Builder) setupDatabase(ctx context.Context, schemasDir, appID, ownerEmail string, app *models.App) error {
+	log.Printf("[Database] Updating schemas for app %s with schemas from %s\n", appID, schemasDir)
 
 	// Create context with timeout (2 minutes for database setup)
 	dbCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	// Run app-manager create command with owner email
-	// This creates both the database AND all collections AND admin user in one call
-	cmd := exec.CommandContext(dbCtx, "app-manager", "create", appID, "--schemas", schemasDir, "--owner-email", ownerEmail)
+	// Use schemas command to update only schemas (app already exists from CreateApp)
+	args := []string{"schemas", appID, "--dir", schemasDir}
+
+	// Run app-manager schemas command
+	// This only updates collection schemas, app already exists
+	cmd := exec.CommandContext(dbCtx, "app-manager", args...)
 
 	// Set environment variables (include pnpm path where app-manager is installed)
 	cmd.Env = append(os.Environ(),
