@@ -41,6 +41,7 @@ type Version struct {
 	AppID          string     `json:"app_id" db:"app_id"`
 	VersionNumber  int        `json:"version_number" db:"version_number"`
 	Status         string     `json:"status" db:"status"` // pending, building, completed, failed, promoted
+	Requirements   *string    `json:"requirements,omitempty" db:"requirements"` // Initial requirements for version 1
 	S3CodePath     *string    `json:"s3_code_path,omitempty" db:"s3_code_path"`
 	VercelURL      *string    `json:"vercel_url,omitempty" db:"vercel_url"`
 	VercelDeployID *string    `json:"vercel_deploy_id,omitempty" db:"vercel_deploy_id"`

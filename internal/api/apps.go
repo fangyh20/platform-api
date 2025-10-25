@@ -61,8 +61,8 @@ func (h *AppHandler) CreateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create initial version
-	version, err := h.VersionService.CreateVersion(r.Context(), app.ID)
+	// Create initial version with requirements
+	version, err := h.VersionService.CreateVersion(r.Context(), app.ID, &req.Requirements)
 	if err != nil {
 		middleware.RespondError(w, http.StatusInternalServerError, err.Error())
 		return

@@ -25,7 +25,7 @@ func NewVersionService(dbClient *db.PostgresClient, vercelService *VercelService
 }
 
 // CreateVersion creates a new version for an app
-func (s *VersionService) CreateVersion(ctx context.Context, appID string) (*models.Version, error) {
+func (s *VersionService) CreateVersion(ctx context.Context, appID string, requirements *string) (*models.Version, error) {
 	// Get the latest version number
 	var maxVersion int
 	query := `SELECT COALESCE(MAX(version_number), 0) FROM versions WHERE app_id = $1`
@@ -39,19 +39,20 @@ func (s *VersionService) CreateVersion(ctx context.Context, appID string) (*mode
 		AppID:         appID,
 		VersionNumber: maxVersion + 1,
 		Status:        "pending",
+		Requirements:  requirements,
 		CreatedAt:     time.Now(),
 	}
 
 	insertQuery := `
-		INSERT INTO versions (id, app_id, version_number, status, created_at)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, app_id, version_number, status, s3_code_path, vercel_url, vercel_deploy_id, build_log, error_message, created_at
+		INSERT INTO versions (id, app_id, version_number, status, requirements, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, app_id, version_number, status, requirements, s3_code_path, vercel_url, vercel_deploy_id, build_log, error_message, created_at
 	`
 
 	err = s.DB.QueryRow(ctx, insertQuery,
-		version.ID, version.AppID, version.VersionNumber, version.Status, version.CreatedAt,
+		version.ID, version.AppID, version.VersionNumber, version.Status, version.Requirements, version.CreatedAt,
 	).Scan(
-		&version.ID, &version.AppID, &version.VersionNumber, &version.Status,
+		&version.ID, &version.AppID, &version.VersionNumber, &version.Status, &version.Requirements,
 		&version.S3CodePath, &version.VercelURL, &version.VercelDeployID,
 		&version.BuildLog, &version.ErrorMessage, &version.CreatedAt,
 	)
@@ -67,13 +68,13 @@ func (s *VersionService) CreateVersion(ctx context.Context, appID string) (*mode
 func (s *VersionService) GetVersion(ctx context.Context, versionID string) (*models.Version, error) {
 	version := &models.Version{}
 	query := `
-		SELECT id, app_id, version_number, status, s3_code_path, vercel_url, vercel_deploy_id, build_log, error_message, created_at
+		SELECT id, app_id, version_number, status, requirements, s3_code_path, vercel_url, vercel_deploy_id, build_log, error_message, created_at
 		FROM versions
 		WHERE id = $1
 	`
 
 	err := s.DB.QueryRow(ctx, query, versionID).Scan(
-		&version.ID, &version.AppID, &version.VersionNumber, &version.Status,
+		&version.ID, &version.AppID, &version.VersionNumber, &version.Status, &version.Requirements,
 		&version.S3CodePath, &version.VercelURL, &version.VercelDeployID,
 		&version.BuildLog, &version.ErrorMessage, &version.CreatedAt,
 	)
@@ -88,7 +89,7 @@ func (s *VersionService) GetVersion(ctx context.Context, versionID string) (*mod
 // ListVersions retrieves all versions for an app
 func (s *VersionService) ListVersions(ctx context.Context, appID string) ([]models.Version, error) {
 	query := `
-		SELECT id, app_id, version_number, status, s3_code_path, vercel_url, vercel_deploy_id, build_log, error_message, created_at
+		SELECT id, app_id, version_number, status, requirements, s3_code_path, vercel_url, vercel_deploy_id, build_log, error_message, created_at
 		FROM versions
 		WHERE app_id = $1
 		ORDER BY version_number DESC
@@ -104,7 +105,7 @@ func (s *VersionService) ListVersions(ctx context.Context, appID string) ([]mode
 	for rows.Next() {
 		var version models.Version
 		err := rows.Scan(
-			&version.ID, &version.AppID, &version.VersionNumber, &version.Status,
+			&version.ID, &version.AppID, &version.VersionNumber, &version.Status, &version.Requirements,
 			&version.S3CodePath, &version.VercelURL, &version.VercelDeployID,
 			&version.BuildLog, &version.ErrorMessage, &version.CreatedAt,
 		)
@@ -188,11 +189,11 @@ func (s *VersionService) UpdateVersion(ctx context.Context, versionID string, up
 	query += fmt.Sprintf(" WHERE id = $%d", argCount)
 	args = append(args, versionID)
 
-	query += " RETURNING id, app_id, version_number, status, s3_code_path, vercel_url, vercel_deploy_id, build_log, error_message, created_at"
+	query += " RETURNING id, app_id, version_number, status, requirements, s3_code_path, vercel_url, vercel_deploy_id, build_log, error_message, created_at"
 
 	version := &models.Version{}
 	err := s.DB.QueryRow(ctx, query, args...).Scan(
-		&version.ID, &version.AppID, &version.VersionNumber, &version.Status,
+		&version.ID, &version.AppID, &version.VersionNumber, &version.Status, &version.Requirements,
 		&version.S3CodePath, &version.VercelURL, &version.VercelDeployID,
 		&version.BuildLog, &version.ErrorMessage, &version.CreatedAt,
 	)

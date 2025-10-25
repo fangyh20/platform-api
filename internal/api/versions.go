@@ -90,7 +90,7 @@ func (h *AppHandler) CreateVersion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create version
-	version, err := h.VersionService.CreateVersion(r.Context(), appID)
+	version, err := h.VersionService.CreateVersion(r.Context(), appID, nil)
 	if err != nil {
 		middleware.RespondError(w, http.StatusInternalServerError, err.Error())
 		return
