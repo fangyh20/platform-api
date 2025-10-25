@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -110,8 +111,9 @@ func (h *AppHandler) CreateVersion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Start build process in background
+	// Use context.Background() instead of r.Context() so the build continues even after HTTP response
 	// Pass empty string for ownerEmail since admin user was created during app creation
-	go h.Builder.BuildApp(r.Context(), version.ID, appID, "", comments, "")
+	go h.Builder.BuildApp(context.Background(), version.ID, appID, "", comments, "")
 
 	middleware.RespondJSON(w, http.StatusCreated, version)
 }
